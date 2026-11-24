@@ -23,6 +23,8 @@ command -v wasm-tools >/dev/null || { echo "wasm-tools not found (cargo install 
 
 PROJECT="$ROOT/src/Accounting.Browser"
 mkdir -p "$OUT"
+# the compiler wants the reference assemblies of the project references on disk
+dotnet build "$ROOT/src/Accounting/Accounting.fsproj" -c Release --nologo -v q >/dev/null
 if [[ -n "${FSHARP_WASM_BIN:-}" ]]; then
   "$FSHARP_WASM_BIN" "$PROJECT" --outDir "$OUT" --noCache
 elif [[ -n "${FSHARP_WASM_DIR:-}" ]]; then
