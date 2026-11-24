@@ -69,6 +69,15 @@ The compiler is not part of this repository: `build/build.sh` takes a release bi
 - A screen reader is told the one cell that is selected (the grid's value), not the cells: a table of a million rows cannot be in the accessibility tree. The overlay for tables belongs to the accessibility layer of the platform, which is not finished.
 - Sums are floating point (exact to the cent for totals up to about 10^11).
 
+## Contributing
+
+Welcome. [CONTRIBUTING](https://github.com/fsharp-wasm/.github/blob/develop/CONTRIBUTING.md) is the organisation's guide and [AGENTS.md](AGENTS.md) says how the platform is worked on (the compiler comes first: a fault found here
+is fixed in the compiler, not worked around here).
+
+- **Run the tests:** `bash build/test.sh` (under .NET); `node tests/e2e/grid.mjs` for the compiled module in Chromium.
+- **A good first contribution:** A measure or a formula over the ledger, with a test against a hand-computed answer. Issues labelled [`good first issue`](https://github.com/fsharp-wasm/fsharp-wasm-accounting/labels/good%20first%20issue) are the places to start.
+- **A change** goes to `develop` as a pull request, with a test that fails without it. Open an issue first for anything larger than a fix.
+
 ## License
 
 [Apache-2.0](LICENSE).
