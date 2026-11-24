@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Accounting grid — fsharp-wasm-accounting</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script src="../lib/runtime/runtime/frame.js" data-here="Accounting grid"></script>
+  <style>
+    #gfx { display: block; width: 100%; height: min(82vh, 820px); min-height: 460px; border-radius: var(--pico-border-radius);
+           background: #0f172a; outline: none; touch-action: none; }
+    #gfx:focus-visible { box-shadow: 0 0 0 3px var(--pico-primary-focus); }
+    .hint { font-size: .85rem; opacity: .7; }
+  </style>
+</head>
+<body>
+  <header class="container">
+    <hgroup>
+      <h1>Accounting grid</h1>
+      <p>A ledger of a million journal lines as a pivot table, written in F# and compiled to WebAssembly GC. Rows and columns fold to their totals, the table turns
+         (accounts, cost centres, periods), and the lines behind a cell open as a tab. The whole interface is drawn by the module onto one canvas;
+         JavaScript only forwards pointer, key and size events (<code>lib/runtime/runtime/gfx.js</code>).</p>
+    </hgroup>
+  </header>
+  <main class="container">
+    <article id="status-banner"><p id="status">Loading…</p></article>
+    <canvas id="gfx" tabindex="0" aria-label="Accounting grid canvas"></canvas>
+    <p class="hint">Click a <em>caret</em> to open or fold a row or a column; arrow keys move, <kbd>Space</kbd> folds the row, <kbd>Shift</kbd>+<kbd>Space</kbd> the column,
+      <kbd>Enter</kbd> (or a second click) opens the lines behind the cell as a tab. Build the module first: <code>bash build/build.sh</code>, then <code>bash build/serve.sh</code>.</p>
+  </main>
+  <script type="module">
+    import { boot } from "../lib/runtime/runtime/boot.js";
+    import { mount } from "../lib/runtime/runtime/gfx.js";
+
+    const instance = await boot({ wasm: new URL("../dist/AccountingGrid.wasm", import.meta.url), entry: "start" });
+    if (instance) {
+      window.__module = instance;                                   // the page's tests read the counts the module exports
+      mount(instance, "gfx");
+      document.getElementById("status-banner").hidden = true;       // the status is for errors; a loaded page needs no banner
+    }
+  </script>
+</body>
+</html>

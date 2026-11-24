@@ -1,0 +1,15 @@
+{
+  "name": "fsharp-wasm-accounting",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An accounting grid: a ledger as a pivot table that folds to its totals, in F# compiled to WebAssembly GC",
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "serve": "node build/serve.mjs",
+    "test:e2e": "node tests/e2e/grid.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.59.1"
+  }
+}

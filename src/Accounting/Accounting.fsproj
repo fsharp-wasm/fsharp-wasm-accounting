@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The accounting grid as a TEA application: a ledger of journal lines as a pivot table that folds its rows and columns to their totals, turns, and opens the lines behind a cell
+       as a tab of its own.  Library only: no host and no drawing; the browser module (../Accounting.Browser) and the tests plug it in.  Written in the subset fsharp-wasm compiles, so
+       the same sources run under .NET and as WebAssembly GC. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>FSharp.Wasm.Accounting</AssemblyName>
+    <RootNamespace>Accounting</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Ledger.fs" />
+    <Compile Include="Model.fs" />
+    <Compile Include="View.fs" />
+    <Compile Include="App.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Frame/FSharp.Wasm.Frame.fsproj" />
+    <ProjectReference Include="../../lib/graphics/src/FSharp.Graphics.Tea/FSharp.Graphics.Tea.fsproj" />
+    <ProjectReference Include="../../lib/graphics/src/FSharp.Graphics.SceneDsl/FSharp.Graphics.SceneDsl.fsproj" />
+    <ProjectReference Include="../../lib/graphics/src/FSharp.Graphics.Widgets/FSharp.Graphics.Widgets.fsproj" />
+  </ItemGroup>
+</Project>

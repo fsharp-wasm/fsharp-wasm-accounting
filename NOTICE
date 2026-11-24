@@ -1,0 +1,8 @@
+fsharp-wasm-accounting
+Copyright 2026 The fsharp-wasm contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Components that are not part of this work and keep their own licence:
+  lib/graphics, lib/runtime, lib/fsharp-wasm-core, lib/wasmecto   git submodules (fsharp-wasm-graphics, fsharp-wasm-runtime, fsharp-wasm-core, fsharp-wasmecto), Apache-2.0
+(The compiler, fsharp-wasm, is not part of this repository; it is used as a release binary or a checkout.)
