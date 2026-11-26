@@ -44,6 +44,10 @@ costs a frame the same as one of eighty. See [`FSharp.Wasm.Frame`](https://githu
   `=SUM(A1:C1)`) and the ledger by name (`=Actual*1.1`, `=Budget+100`). **Enter** and **Tab** keep it, **Escape** throws it away, **Delete** empties the cell, **Ctrl+Z** and **Ctrl+Y** take a step back and do it again.
   Every total above the cell moves by the difference and the variance follows; a formula marks its cell `ƒ`, a typed number `•`. The **History** tab lists the steps, newest first, with what the engine did for each:
   how many calcs it reached, how many ran, how many it left alone because they came out the same, and how many came out with another value.
+- **Correct the ledger**: in the tab of the lines behind a cell, select the **Actual** amount of a journal line and type (or **F2**) a number; **Enter** keeps it, **Escape** throws it away, **Delete**
+  takes the correction back to what the ledger said. A corrected amount is marked `•`, and the formula bar says what the ledger had. It is a step of the same document as the budget: it is on the tape and
+  in the History tab, **Ctrl+Z** and **Ctrl+Y** take it back and do it again, and one flush of the engine runs it: the cube is built again from the lines (one pass), the formulas that read `Actual` are
+  calculated again, and the plan is written over the new cube. Every total above the line moves by the difference.
 - **Pivot** turns the table; **Measure** shows Actual, Budget, Variance (Actual − Budget of the totals) or Variance % (of the budget). A division by zero is a dash.
 
 ## Build and run

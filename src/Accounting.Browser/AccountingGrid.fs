@@ -145,6 +145,26 @@ let planEditLength () : int = match page.App.Model.Editing with Some e -> e.Text
 [<CompiledName("budgetTotal")>]
 let budgetTotal () : float = FSharp.Wasm.Frame.Cube.value page.App.Model.Cube 1 0 0
 
+/// The ledger: how many journal lines have a corrected amount, whether the booked amount of a line is selected or being corrected, the amount of the line that is selected (0 when none), and the grand
+/// total of what was booked.
+[<CompiledName("corrections")>]
+let corrections () : int = Planning.corrections page.App.Model.G
+
+[<CompiledName("lineSelected")>]
+let lineSelected () : bool = (Model.Lines.selected page.App.Model).IsSome
+
+[<CompiledName("lineEditing")>]
+let lineEditing () : bool = page.App.Model.Correcting.IsSome
+
+[<CompiledName("lineAmount")>]
+let lineAmount () : float =
+    match Model.Lines.selected page.App.Model with
+    | Some line -> page.App.Model.Facts.Values.[0].[line]
+    | None -> 0.0
+
+[<CompiledName("actualTotal")>]
+let actualTotal () : float = FSharp.Wasm.Frame.Cube.value page.App.Model.Cube 0 0 0
+
 /// What the last step did: the cells that came out with another value, the calcs it reached, and how many of those ran.
 [<CompiledName("lastChanged")>]
 let lastChanged () : int = match page.App.Model.LastRecalc with Some r -> r.Changed | None -> -1

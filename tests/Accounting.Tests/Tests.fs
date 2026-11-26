@@ -226,15 +226,15 @@ let plan =
         testCase "F2 opens a cell with what is in it: the ledger's budget as a number, or the text that was written" <| fun () ->
             let m0 = planModel () |> select 2 4
             let e0 = (m0 |> send [ Key "F2" ]).Editing.Value
-            Expect.equal e0.Text (Value.numberText (Cube.leaf m0.G.Base 1 2 4)) "the budget of the ledger"
+            Expect.equal e0.Text (Value.numberText (Cube.leaf m0.G.Base.Peek 1 2 4)) "the budget of the ledger"
             Expect.equal (e0.Account, e0.Period) (2, 4) "the account and the month"
             let e1 = (m0 |> send [ BeginEdit(Some "=Actual*2"); CommitEdit; Key "F2" ]).Editing.Value
             Expect.equal e1.Text "=Actual*2" "the formula, not its value"
         testCase "a formula reads the ledger by name: Actual and Budget are the numbers of that account and month" <| fun () ->
             let m0 = planModel ()
             let m = m0 |> put 4 7 "=Actual*1.1" |> put 4 8 "=Budget+100"
-            Expect.approxEqual (budget m 4 7) (Cube.leaf m0.G.Base 0 4 7 * 1.1) 1e-6 "ten percent over what was booked"
-            Expect.approxEqual (budget m 4 8) (Cube.leaf m0.G.Base 1 4 8 + 100.0) 1e-6 "the ledger's budget and a hundred"
+            Expect.approxEqual (budget m 4 7) (Cube.leaf m0.G.Base.Peek 0 4 7 * 1.1) 1e-6 "ten percent over what was booked"
+            Expect.approxEqual (budget m 4 8) (Cube.leaf m0.G.Base.Peek 1 4 8 + 100.0) 1e-6 "the ledger's budget and a hundred"
             let r = placeOf m.Cube.RowTree m.Rows 4
             Expect.stringStarts (Model.Table.cell m r (placeOf m.Cube.ColTree m.Cols 7)).Text "ƒ " "a formula is marked"
             Expect.approxEqual (total m 1) (total m0 1 + (budget m 4 7 - budget m0 4 7) + (budget m 4 8 - budget m0 4 8)) 1e-6 "the total moved by both"
@@ -261,7 +261,7 @@ let plan =
         testCase "an error that is corrected puts its number into the totals" <| fun () ->
             let m0 = planModel ()
             let m = m0 |> put 1 1 "=1/0" |> put 1 1 "=Actual"
-            Expect.approxEqual (budget m 1 1) (Cube.leaf m0.G.Base 0 1 1) 1e-6 "the number"
+            Expect.approxEqual (budget m 1 1) (Cube.leaf m0.G.Base.Peek 0 1 1) 1e-6 "the number"
             Expect.approxEqual (total m 1) (total m0 1 - budget m0 1 1 + budget m 1 1) 1e-6 "in the total"
         testCase "undo and redo go back and forward over the steps, also across cells that read each other" <| fun () ->
             let m0 = planModel ()
@@ -389,4 +389,115 @@ let scene =
             Expect.equal app.Model.Viewport (Vec2.create 900.0f 600.0f) "the size"
     ]
 
-let suites = [ ledger; model; plan; scene ]
+// ── the ledger: the booked amount of a journal line, corrected in the tab of the lines ──
+
+/// The lines behind the grand total: a tab with every journal line, with the Actual amount of the line at place `r` selected.
+let private linesTab (r: int) (m: Model) : Model =
+    let m1 = m |> send [ OpenCell(0, 0) ]
+    let d = m1.Details.Head
+    m1 |> send [ GridState(d.Id, { d.Grid with Selected = Some (r, 3) }) ]
+
+/// The journal line at place `r` of the tab that is on show.
+let private lineAt (m: Model) (r: int) : int = (m.Details |> List.find (fun d -> d.Id = m.Tab)).Entries.[r]
+
+let private booked (m: Model) (line: int) : float = m.Facts.Values.[0].[line]
+
+/// Correct the booked amount of the line at place `r`, the way a person does: select it, type, Enter.
+let private correctTo (r: int) (text: string) (m: Model) : Model = m |> linesTab r |> send (text |> Seq.map (fun c -> Key (string c)) |> List.ofSeq) |> send [ Key "Enter" ]
+
+let correcting =
+    testList "Ledger lines" [
+        testCase "a corrected amount is the booked amount of the line, and every total above it moves by the difference" <| fun () ->
+            let m0 = init () |> send [ Fold true ]
+            let line = lineAt (linesTab 3 m0) 3
+            let before = booked m0 line
+            let m = m0 |> correctTo 3 "12345.6"
+            Expect.approxEqual (booked m line) 12345.6 1e-9 "the line"
+            Expect.approxEqual (Cube.value m.Cube 0 0 0) (Cube.value m0.Cube 0 0 0 - before + 12345.6) 1e-6 "the grand total moved by exactly that"
+            Expect.approxEqual (Cube.value m.Cube 1 0 0) (Cube.value m0.Cube 1 0 0) 1e-9 "the budget is not touched"
+            Expect.equal m.Correcting None "the correcting is over"
+            Expect.equal m.Steps (m0.Steps + 1) "one step on the tape"
+            Expect.isTrue (Planning.isCorrected m.G line) "the line says it was corrected"
+            let d = m.Details.Head
+            Expect.stringStarts (Model.Table.detailCell m d 3 3).Text "• " "and the tab marks it"
+            Expect.stringContains (Planning.tape m.G |> Array.last).Label (Model.Lines.reference line) "the tape names the line"
+        testCase "the total of the cell that the tab was opened for follows, also after the tab was opened" <| fun () ->
+            let m0 = init () |> send [ OpenCell(1, 1) ]
+            let d = m0.Details.Head
+            let line = d.Entries.[0]
+            let cellBefore = Cube.value m0.Cube 0 m0.Rows.[1] m0.Cols.[1]
+            // the models of a run share the facts (a correction is written into them), so what the line was is read before
+            let before = booked m0 line
+            let m = m0 |> send [ GridState(d.Id, { d.Grid with Selected = Some (0, 3) }); Key "1"; Key "0"; Key "0"; Key "Enter" ]
+            Expect.approxEqual (Cube.value m.Cube 0 m.Rows.[1] m.Cols.[1]) (cellBefore - before + 100.0) 1e-6 "the cell the lines are behind"
+        testCase "keys: a character starts it, F2 starts with the amount, Backspace takes one back, Escape throws it away, text that is no number stays open" <| fun () ->
+            let m0 = init () |> linesTab 0
+            let line = lineAt m0 0
+            let f2 = m0 |> send [ Key "F2" ]
+            Expect.equal (f2.Correcting |> Option.map (fun e -> e.Line)) (Some line) "the line"
+            Expect.equal (f2.Correcting |> Option.map (fun e -> e.Text)) (Some (Value.numberText (booked m0 line))) "starts with the amount that the line has"
+            let typed = m0 |> send [ Key "7"; Key "8"; Key "9"; Key "Backspace" ]
+            Expect.equal (typed.Correcting |> Option.map (fun e -> e.Text)) (Some "78") "what was typed"
+            Expect.equal (booked typed line) (booked m0 line) "nothing is written before Enter"
+            let thrown = typed |> send [ Key "Escape" ]
+            Expect.equal thrown.Correcting None "Escape ends it"
+            Expect.equal thrown.Steps m0.Steps "and is no step"
+            let bad = m0 |> send [ Key "a"; Key "b"; Key "Enter" ]
+            Expect.isTrue bad.Correcting.IsSome "text that is no number is not kept"
+            Expect.equal (booked bad line) (booked m0 line) "and changes nothing"
+            let same = m0 |> send [ Key "F2"; Key "Enter" ]
+            Expect.equal same.Steps m0.Steps "the amount it had is no step"
+        testCase "only the Actual column can be corrected, and the amount is in whole cents" <| fun () ->
+            let m0 = init () |> linesTab 0
+            let d = m0.Details.Head
+            let onBudget = m0 |> send [ GridState(d.Id, { d.Grid with Selected = Some (0, 4) }); Key "F2" ]
+            Expect.equal onBudget.Correcting None "the Budget column is the plan's"
+            let onAccount = m0 |> send [ GridState(d.Id, { d.Grid with Selected = Some (0, 0) }); Key "5" ]
+            Expect.equal onAccount.Correcting None "and so are the others"
+            let line = lineAt m0 0
+            Expect.approxEqual (booked (m0 |> correctTo 0 "10.678") line) 10.68 1e-9 "10.678 is 10.68"
+        testCase "undo and redo take a correction back and do it again, and the totals with it" <| fun () ->
+            let m0 = init () |> send [ Fold true ]
+            let line = lineAt (linesTab 2 m0) 2
+            let m1 = m0 |> correctTo 2 "500"
+            let m2 = m1 |> send [ Undo ]
+            Expect.approxEqual (booked m2 line) (booked m0 line) 1e-9 "the ledger's amount again"
+            Expect.approxEqual (Cube.value m2.Cube 0 0 0) (Cube.value m0.Cube 0 0 0) 1e-6 "and the total"
+            Expect.isFalse (Planning.isCorrected m2.G line) "no longer corrected"
+            let m3 = m2 |> send [ Redo ]
+            Expect.approxEqual (booked m3 line) 500.0 1e-9 "done again"
+            Expect.approxEqual (Cube.value m3.Cube 0 0 0) (Cube.value m1.Cube 0 0 0) 1e-6 "and the total"
+        testCase "Delete takes the correction back as a step of its own" <| fun () ->
+            let m0 = init () |> send [ Fold true ]
+            let line = lineAt (linesTab 1 m0) 1
+            let m1 = m0 |> correctTo 1 "77"
+            let m2 = m1 |> send [ Key "Delete" ]
+            Expect.approxEqual (booked m2 line) (booked m0 line) 1e-9 "the ledger's amount"
+            Expect.equal m2.Steps (m1.Steps + 1) "a step on the tape"
+            Expect.isFalse (Planning.isCorrected m2.G line) "no longer corrected"
+            Expect.approxEqual (booked (m2 |> send [ Undo ]) line) 77.0 1e-9 "and it can be undone"
+        testCase "a formula that reads the ledger is calculated again when a line is corrected" <| fun () ->
+            let m0 = init () |> send [ Fold true ]
+            // the line at place 0 of the grand total: its account and its month
+            let line = lineAt (linesTab 0 m0) 0
+            let account = m0.Facts.Dimensions.[Ledger.Accounts].Leaf.[line]
+            let period = m0.Facts.Dimensions.[Ledger.Periods].Leaf.[line]
+            let m1 = m0 |> send [ SetMeasure 1 ] |> select account period |> send [ BeginEdit(Some "=Actual*2"); CommitEdit ]
+            let planned0 = budget m1 account period
+            let actual0 = Cube.leaf m1.G.Base.Peek 0 account period
+            let before = booked m1 line
+            Expect.approxEqual planned0 (2.0 * actual0) 1e-6 "twice the actual"
+            let m2 = m1 |> correctTo 0 "1000"
+            let actual1 = Cube.leaf m2.G.Base.Peek 0 account period
+            Expect.approxEqual actual1 (actual0 - before + 1000.0) 1e-6 "the ledger of the cell has the new amount"
+            Expect.approxEqual (budget m2 account period) (2.0 * actual1) 1e-6 "and the formula that reads it follows"
+        testCase "moving to another cell keeps what was corrected" <| fun () ->
+            let m0 = init () |> linesTab 0
+            let d = m0.Details.Head
+            let line = lineAt m0 0
+            let m = m0 |> send [ Key "4"; Key "2"; GridState(d.Id, { d.Grid with Selected = Some (1, 3) }) ]
+            Expect.approxEqual (booked m line) 42.0 1e-9 "kept"
+            Expect.equal m.Correcting None "and the correcting is over"
+    ]
+
+let suites = [ ledger; model; plan; correcting; scene ]

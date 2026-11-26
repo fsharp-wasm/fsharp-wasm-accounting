@@ -2,6 +2,7 @@ namespace Accounting
 
 open FSharp.Math
 open FSharp.Wasm.Frame
+open FSharp.Wasm.Formula
 open FSharp.Graphics.Core
 open FSharp.Graphics.Scene
 open FSharp.Graphics.SceneDsl
@@ -22,22 +23,31 @@ module View =
     let private caption (ui: Ui<Msg>) (x: float32) (y: float32) (text: string) : Scene =
         shift x (y + (ui.Theme.ControlHeight - ui.Theme.FontSize * 1.2f) * 0.5f) (Label.view ui Label.Muted text)
 
-    /// The bar above the table: the plan cell that is selected (an account in a month) and its text, which is what is being typed while it is written.  A cell that is not one of the
-    /// plan says how to get to one.
+    /// The bar above the table: the plan cell that is selected (an account in a month) and its text, which is what is being typed while it is written; or, in a tab of journal lines, the
+    /// booked amount that is selected (or being corrected).  A cell that is neither says how to get to one.
     let private formulaBar (ui: Ui<Msg>) (m: Model) (x: float32) (y: float32) (w: float32) : Scene =
         let th = ui.Theme
         let h = th.ControlHeight
         let nameW = min 300.0f (w * 0.42f)
-        let name, text, editing =
-            match m.Editing with
-            | Some e -> Model.Plan.cellName m e.Account e.Period, e.Text, true
-            | None ->
+        let lineName (line: int) : string = Model.Lines.reference line + " · Actual"
+        // a line that was corrected says what the ledger had
+        let lineText (line: int) : string =
+            Value.numberText m.Facts.Values.[0].[line] + (if Planning.isCorrected m.G line then "   (corrected; the ledger said " + Format.amount m.G.Original.[line] + ")" else "")
+        let kind, name, text, editing =
+            match m.Editing, m.Correcting with
+            | Some e, _ -> "Plan cell ", Model.Plan.cellName m e.Account e.Period, e.Text, true
+            | None, Some c -> "Ledger line ", lineName c.Line, c.Text, true
+            | None, None ->
                 match Model.Plan.selected m with
-                | Some (a, p) -> Model.Plan.cellName m a p, Planning.source m.G a p, false
-                | None -> "", "", false
+                | Some (a, p) -> "Plan cell ", Model.Plan.cellName m a p, Planning.source m.G a p, false
+                | None ->
+                    match Model.Lines.selected m with
+                    | Some line -> "Ledger line ", lineName line, lineText line, false
+                    | None -> "", "", "", false
         let ty = (h - th.FontSize * 1.2f) * 0.5f
         let hint =
             if Pivots.all.[m.Pivot].RowDim = Ledger.Centres || Pivots.all.[m.Pivot].ColDim = Ledger.Centres then "The plan is written on a table of accounts and months."
+            elif m.Details.Length > 0 && m.Tab <> "pivot" && m.Tab <> "history" then "Select the Actual amount of a line: F2 or type to correct it, Delete to take the correction back, Ctrl+Z to undo."
             elif m.Measure <> 1 then "Choose the Budget measure, select a month of an account, then F2 or type to plan it."
             else "Select a month of an account: F2 or type to plan it, Delete to empty it, Ctrl+Z to undo."
         let body =
@@ -49,7 +59,7 @@ module View =
                         shift (nameW + 14.0f) ty (Clip(Rect.create 0.0f 0.0f (w - nameW - 28.0f) (th.FontSize * 1.4f), Text(shown, Ui.textStyle ui th.FontSize (if editing || text <> "" then th.Text else th.TextMuted)))) ]
         let edge = if editing then th.Focus else th.Control
         shift x y
-            (Semantic(Semantics.create "formula-bar" Role.StaticText ("Plan cell " + name + ": " + text),
+            (Semantic(Semantics.create "formula-bar" Role.StaticText (kind + name + ": " + text),
                       Group [ rectangle { bounds 0.0f 0.0f w h; radius th.Radius; fill th.Background; stroke edge (if editing then 2.0f else 1.0f) }
                               Clip(Rect.create 0.0f 0.0f w h, body) ]))
 

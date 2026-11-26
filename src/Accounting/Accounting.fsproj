@@ -17,6 +17,7 @@
     <Compile Include="App.fs" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Data/FSharp.Wasm.Data.fsproj" />
     <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Frame/FSharp.Wasm.Frame.fsproj" />
     <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Formula/FSharp.Wasm.Formula.fsproj" />
     <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Graph/FSharp.Wasm.Graph.fsproj" />

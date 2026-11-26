@@ -3,6 +3,7 @@ namespace Accounting
 open FSharp.Math
 open FSharp.Wasm.Frame
 open FSharp.Wasm.Formula
+open FSharp.Wasm.Data
 open FSharp.Graphics.Tea
 open FSharp.Graphics.Widgets
 
@@ -27,6 +28,9 @@ type Detail =
 /// A cell of the plan being written: the budget of an account in a month (their leaves), and the text typed so far.
 type Edit = { Account: int; Period: int; Text: string }
 
+/// A booked amount being corrected: the journal line (its position in the ledger), and the text typed so far.
+type LineEdit = { Line: int; Text: string }
+
 /// What a step of the plan did, for the status line: the cell, how many cells came out with another value (the cell itself, and what reads it), and what the engine did for it: how many
 /// calcs the step reached and how many of those it ran (the rest came out the same and were left alone).
 type Recalc = { Cell: string; Changed: int; Reached: int; Ran: int }
@@ -40,6 +44,8 @@ type Model =
       G: Planning
       /// the cell being written, when there is one
       Editing: Edit option
+      /// the booked amount of a journal line being corrected, when there is one
+      Correcting: LineEdit option
       /// how many steps are on the tape: what tells a model after a step from one before it
       Steps: int
       LastRecalc: Recalc option
@@ -162,6 +168,20 @@ module Model =
         let cellName (m: Model) (account: int) (period: int) : string =
             Ledger.leafLabel m.Facts Ledger.Accounts account + " · " + Ledger.leafLabel m.Facts Ledger.Periods period
 
+    // ── the ledger: the booked amount of a journal line, corrected in the tab of the lines ──
+    module Lines =
+        /// The reference of a journal line, as its tab shows it.
+        let reference (line: int) : string = "INV-" + string (100000 + line)
+
+        /// The journal line whose booked amount (the Actual column) is selected in the tab that is on show.
+        let selected (m: Model) : int option =
+            match m.Details |> List.tryFind (fun d -> d.Id = m.Tab) with
+            | Some d ->
+                (match d.Grid.Selected with
+                 | Some (r, 3) when r >= 0 && r < d.Entries.Length -> Some d.Entries.[r]
+                 | _ -> None)
+            | None -> None
+
     // ── the lines and the cells, as the grid asks for them ──
     module Table =
         let rowLine (m: Model) (i: int) : Grid.Line =
@@ -209,8 +229,8 @@ module Model =
             match c with
             | 0 -> { Text = Ledger.leafLabel f Ledger.Accounts f.Dimensions.[Ledger.Accounts].Leaf.[line]; Muted = false; Left = true }
             | 1 -> { Text = Ledger.leafLabel f Ledger.Centres f.Dimensions.[Ledger.Centres].Leaf.[line]; Muted = false; Left = true }
-            | 2 -> { Text = "INV-" + string (100000 + line); Muted = true; Left = true }
-            | 3 -> { Text = Format.amount f.Values.[0].[line]; Muted = false; Left = false }
+            | 2 -> { Text = Lines.reference line; Muted = true; Left = true }
+            | 3 -> { Text = (if Planning.isCorrected m.G line then "• " else "") + Format.amount f.Values.[0].[line]; Muted = false; Left = false }
             | _ -> { Text = Format.amount f.Values.[1].[line]; Muted = true; Left = false }
 
     let private clampSelection (rows: int) (cols: int) (s: Grid.State) : Grid.State =
@@ -257,6 +277,7 @@ module Model =
               Cube = cube
               G = g
               Editing = None
+              Correcting = None
               Steps = 0
               LastRecalc = None
               Measure = 0
@@ -303,7 +324,7 @@ module Model =
     /// The text a cell starts with when it is opened for editing: what was written into it, or the budget of the ledger as a number.
     let private startText (m: Model) (account: int) (period: int) : string =
         let written = Planning.source m.G account period
-        if written <> "" then written else Value.numberText (Cube.leaf m.G.Base 1 account period)
+        if written <> "" then written else Value.numberText (Cube.leaf m.G.Base.Peek 1 account period)
 
     let private beginEdit (m: Model) (initial: string option) : Model =
         match Plan.selected m with
@@ -338,11 +359,11 @@ module Model =
 
     let private undoEdit (m: Model) : Model =
         let r = Planning.undo m.G
-        stepped { m with Editing = None } (lastLabel m) r
+        stepped { m with Editing = None; Correcting = None } (lastLabel m) r
 
     let private redoEdit (m: Model) : Model =
         let r = Planning.redo m.G
-        stepped { m with Editing = None } (lastLabel m) r
+        stepped { m with Editing = None; Correcting = None } (lastLabel m) r
 
     /// Empty the cell of the plan that is selected: the ledger's budget is there again.
     let private clearPlanCell (m: Model) : Model =
@@ -351,6 +372,46 @@ module Model =
             let cell = Plan.cellName m account period
             stepped m cell (Some (Planning.write m.G (cell + " cleared") account period ""))
         | _ -> m
+
+    // ── correcting the ledger: every correction of a booked amount is a step on the same tape ──
+
+    /// What the ledger holds as the booked amount of a journal line now, as the text a correction starts with.
+    let private amountText (m: Model) (line: int) : string = Value.numberText m.Facts.Values.[0].[line]
+
+    let private beginCorrection (m: Model) (initial: string option) : Model =
+        match Lines.selected m with
+        | Some line -> { m with Correcting = Some { Line = line; Text = (match initial with Some t -> t | None -> amountText m line) } }
+        | None -> m
+
+    /// Keep what was typed: one step on the tape, nothing when it is the amount that the line has.  Text that is not a number stays open, to be written again.  An amount is in whole cents.
+    let private commitCorrection (m: Model) : Model =
+        match m.Correcting with
+        | Some e ->
+            (match Numbers.parseFloat (e.Text.Trim()) with
+             | Some typed ->
+                let amount = floor (typed * 100.0 + 0.5) / 100.0
+                if amount = m.Facts.Values.[0].[e.Line] then { m with Correcting = None }
+                else
+                    let label = Lines.reference e.Line + " Actual = " + Format.amount amount
+                    stepped { m with Correcting = None } label (Some (Planning.correct m.G label e.Line amount))
+             | None -> m)
+        | None -> m
+
+    /// Take the correction of the selected line back: the ledger's amount stands again, as a step that can be undone.
+    let private uncorrectLine (m: Model) : Model =
+        match Lines.selected m with
+        | Some line when Planning.isCorrected m.G line ->
+            let label = Lines.reference line + " Actual back to the ledger"
+            stepped m label (Some (Planning.uncorrect m.G label line))
+        | _ -> m
+
+    /// What a key does while a booked amount is being corrected: the characters go into the text, Enter keeps it, Escape throws it away.
+    let private correctKey (m: Model) (e: LineEdit) (k: string) : Model =
+        match k with
+        | "Enter" -> commitCorrection m
+        | "Escape" -> { m with Correcting = None }
+        | "Backspace" -> { m with Correcting = Some { e with Text = (if e.Text.Length > 0 then e.Text.Substring(0, e.Text.Length - 1) else "") } }
+        | _ -> if k.Length = 1 then { m with Correcting = Some { e with Text = e.Text + k } } else m
 
     /// What a key does while a cell is being written: the characters go into the text, Enter and Tab keep it, Escape throws it away.
     let private editKey (m: Model) (e: Edit) (k: string) : Model =
@@ -386,17 +447,21 @@ module Model =
                  | _ -> m)
             | None -> m
 
-    /// A key: writing into the plan when a cell of it is being written or is selected (F2 or a character opens it, Delete empties it, Ctrl+Z and Ctrl+Y undo and redo), the table's own keys otherwise.
+    /// A key: writing into the plan when a cell of it is being written or is selected (F2 or a character opens it, Delete empties it, Ctrl+Z and Ctrl+Y undo and redo), the same for the booked amount of a journal line
+    /// in a tab of lines (Delete takes the correction back), the table's own keys otherwise.
     let private key (m: Model) (k: string) : Model =
-        match m.Editing with
-        | Some e -> editKey m e k
-        | None ->
+        match m.Editing, m.Correcting with
+        | Some e, _ -> editKey m e k
+        | None, Some c -> correctKey m c k
+        | None, None ->
             match k with
             | "Undo" -> undoEdit m
             | "Redo" -> redoEdit m
-            | "F2" -> beginEdit m None
+            | "F2" -> if (Lines.selected m).IsSome then beginCorrection m None else beginEdit m None
             | "Delete" when (Plan.selected m).IsSome -> clearPlanCell m
+            | "Delete" when (Lines.selected m).IsSome -> uncorrectLine m
             | _ when k.Length = 1 && k <> " " && (Plan.selected m).IsSome -> beginEdit m (Some k)
+            | _ when k.Length = 1 && k <> " " && (Lines.selected m).IsSome -> beginCorrection m (Some k)
             | _ -> gridKey m k
 
     /// The program's step.  `clock` reads milliseconds: a turn of the table is timed (it builds the cube again, one pass over the lines).
@@ -423,7 +488,11 @@ module Model =
                 // moving to another cell keeps what was written
                 if tab = "pivot" then (let m1 = (if m.Editing.IsSome && s.Selected <> m.Main.Selected then commitEdit m else m) in { m1 with Main = s })
                 elif tab = "history" then { m with HistoryGrid = s }
-                else { m with Details = m.Details |> List.map (fun d -> if d.Id = tab then { d with Grid = s } else d) }
+                else
+                    // moving to another cell keeps what was corrected
+                    let moved = m.Details |> List.exists (fun d -> d.Id = tab && d.Grid.Selected <> s.Selected)
+                    let m1 = if m.Correcting.IsSome && moved then commitCorrection m else m
+                    { m1 with Details = m1.Details |> List.map (fun d -> if d.Id = tab then { d with Grid = s } else d) }
             | OpenCell(r, c) -> openCell m r c
             | Select id -> { m with Tab = id }
             | Close id -> closeTab m id

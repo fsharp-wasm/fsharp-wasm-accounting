@@ -142,6 +142,24 @@ try {
   check('and Ctrl+Z again takes the first back: the ledger\'s budget', Math.abs((await ex('budgetTotal')) - ledgerBudget) < 1e-6, `${await ex('budgetTotal')} vs ${ledgerBudget}`);
   await page.keyboard.press('Control+y'); await page.waitForTimeout(150);
   check('Ctrl+Y does it again', Math.abs((await ex('budgetTotal')) - written) < 1e-6, `${await ex('budgetTotal')} vs ${written}`);
+  // the ledger: the booked amount of a journal line, corrected in the tab of its lines (the same document, the same tape, the same undo)
+  await press('Enter');
+  check('Enter opens the lines behind the cell of the plan in a tab', (await ex('activeTab')) >= 2, String(await ex('activeTab')));
+  await press('ArrowDown'); await press('ArrowRight'); await press('ArrowRight'); await press('ArrowRight');
+  check('the booked amount of a line is selected', await ex('lineSelected'));
+  const stepsBefore = await ex('planSteps');
+  const actualBefore = await ex('actualTotal');
+  const lineBefore = await ex('lineAmount');
+  await page.keyboard.type('1234.5');
+  check('typing starts correcting it', await ex('lineEditing'));
+  await press('Enter');
+  check('Enter keeps it: one line corrected, one step on the tape, the amount is the line\'s', !(await ex('lineEditing')) && (await ex('corrections')) === 1 && (await ex('planSteps')) === stepsBefore + 1 && Math.abs((await ex('lineAmount')) - 1234.5) < 1e-9, `${await ex('corrections')} ${await ex('planSteps')} ${await ex('lineAmount')}`);
+  check('the grand total of what was booked moved by exactly the difference', Math.abs((await ex('actualTotal')) - (actualBefore - lineBefore + 1234.5)) < 1e-4, `${actualBefore} -> ${await ex('actualTotal')}`);
+  if (shot) await page.screenshot({ path: `${shot}/grid-correct.png` });
+  await page.keyboard.press('Control+z'); await page.waitForTimeout(150);
+  check('Ctrl+Z takes the correction back: the ledger\'s amount and total again', (await ex('corrections')) === 0 && Math.abs((await ex('actualTotal')) - actualBefore) < 1e-4 && Math.abs((await ex('lineAmount')) - lineBefore) < 1e-9, `${await ex('corrections')} ${await ex('actualTotal')} vs ${actualBefore}`);
+  await page.keyboard.press('Control+y'); await page.waitForTimeout(150);
+  check('and Ctrl+Y does it again', (await ex('corrections')) === 1 && Math.abs((await ex('lineAmount')) - 1234.5) < 1e-9);
   // the history: a tab of its own that lists the steps
   await page.mouse.click(...at(16 + 125, 186 + 18));
   await page.waitForTimeout(250);
