@@ -33,7 +33,7 @@ module View =
             | Some e -> Model.Plan.cellName m e.Account e.Period, e.Text, true
             | None ->
                 match Model.Plan.selected m with
-                | Some (a, p) -> Model.Plan.cellName m a p, m.Plan.Source(p, a), false
+                | Some (a, p) -> Model.Plan.cellName m a p, Planning.source m.G a p, false
                 | None -> "", "", false
         let ty = (h - th.FontSize * 1.2f) * 0.5f
         let hint =
@@ -55,6 +55,16 @@ module View =
 
     /// The table that is on show, in the tab that is chosen.
     let private table (ui: Ui<Msg>) (m: Model) : Scene =
+        if m.Tab = "history" then
+            // the tape is read once for the whole table, not once for each cell
+            let tape = Planning.tape m.G
+            Tabs.panel "tabs" "History"
+                (Grid.view ui "grid" "History of the plan: what each step did"
+                    { Frame = Model.historyFrame m; State = m.HistoryGrid; Corner = "Step"
+                      Row = Model.Table.historyRow tape; Col = Model.Table.historyCol; Cell = Model.Table.historyCell tape
+                      OnState = fun s -> ui.Send(GridState("history", s))
+                      OnToggleRow = ignore; OnToggleCol = ignore; OnOpen = fun _ _ -> () })
+        else
         match m.Details |> List.tryFind (fun d -> d.Id = m.Tab) with
         | Some d ->
             Tabs.panel "tabs" d.Title
@@ -79,9 +89,11 @@ module View =
         Format.count (int64 m.Facts.Count) + " journal lines  ·  " + p.Title + " built in " + Format.millis m.CubeMs + " ms  ·  "
         + Format.count (int64 m.Cube.RowTree.Leaves) + " × " + Format.count (int64 m.Cube.ColTree.Leaves) + " leaves  ·  "
         + Format.count (int64 m.Rows.Length) + " × " + Format.count (int64 m.Cols.Length) + " shown"
-        + (if m.Plan.Count = 0 then "" else "  ·  plan: " + Format.count (int64 m.Plan.Count) + " cells")
+        + (if Planning.count m.G = 0 then "" else "  ·  plan: " + Format.count (int64 (Planning.count m.G)) + (if Planning.count m.G = 1 then " cell, " else " cells, ") + Format.count (int64 m.Steps) + (if m.Steps = 1 then " step" else " steps"))
         + (match m.LastRecalc with
-           | Some r -> "  ·  " + r.Cell + ": " + Format.count (int64 r.Changed) + (if r.Changed = 1 then " cell changed" else " cells changed")
+           | Some r ->
+               "  ·  " + r.Cell + ": " + Format.count (int64 r.Changed) + (if r.Changed = 1 then " cell changed" else " cells changed")
+               + " (ran " + Format.count (int64 r.Ran) + " of " + Format.count (int64 r.Reached) + " reached)"
            | None -> "")
 
     let view (ui: Ui<Msg>) (size: Vec2) (m: Model) : Scene =
@@ -96,7 +108,7 @@ module View =
             [ for i in 0 .. Model.measureCount - 1 -> ("measure" + string i, Model.measureName i, (i = m.Measure), (fun () -> ui.Send(SetMeasure i))) ]
         let foldW = th.PadX * 2.0f + Ui.textWidth ui th.FontSize "Fold all" + th.PadX * 2.0f + Ui.textWidth ui th.FontSize "Open all" + th.Gap
         let tab (id: string) (title: string) (closable: bool) : Tabs.Tab = { Id = id; Title = title; Closable = closable }
-        let tabs = tab "pivot" "Pivot" false :: (m.Details |> List.map (fun d -> tab d.Id d.Title true))
+        let tabs = tab "pivot" "Pivot" false :: tab "history" "History" false :: (m.Details |> List.map (fun d -> tab d.Id d.Title true))
         let strip =
             Tabs.viewNamed ui "tabs" "Tables"
                 { Tabs.make tabs m.Tab (fun id -> ui.Send(Select id)) with Width = r.W; OnClose = fun id -> ui.Send(Close id) }

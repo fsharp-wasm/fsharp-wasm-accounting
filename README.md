@@ -36,6 +36,10 @@ costs a frame the same as one of eighty. See [`FSharp.Wasm.Frame`](https://githu
 - Click the **caret** of a row or a column that is a total to open or fold it; **Open all** and **Fold all** do the same to everything. The total at the top folds the whole table to one line.
 - **Arrow keys**, Page Up/Down, Home and End move; **Space** folds the row of the cell, **Shift+Space** the column; **Enter** (or a second click) opens the lines behind the cell as a tab;
   the **wheel** scrolls, with **Shift** sideways.
+- **Plan the budget**: on the **Budget** measure of accounts by periods (either way round), select a cell that is one account in one month and type (or **F2**): a number, or a formula that reads other cells (`=A1*2`,
+  `=SUM(A1:C1)`) and the ledger by name (`=Actual*1.1`, `=Budget+100`). **Enter** and **Tab** keep it, **Escape** throws it away, **Delete** empties the cell, **Ctrl+Z** and **Ctrl+Y** take a step back and do it again.
+  Every total above the cell moves by the difference and the variance follows; a formula marks its cell `ƒ`, a typed number `•`. The **History** tab lists the steps, newest first, with what the engine did for each:
+  how many calcs it reached, how many ran, how many it left alone because they came out the same, and how many came out with another value.
 - **Pivot** turns the table; **Measure** shows Actual, Budget, Variance (Actual − Budget of the totals) or Variance % (of the budget). A division by zero is a dash.
 
 ## Build and run
@@ -55,16 +59,18 @@ The compiler is not part of this repository: `build/build.sh` takes a release bi
 
 | path | what it is |
 |---|---|
-| `src/Accounting` | the application as a library: `Ledger` (a chart of accounts, cost centres, periods and the lines, made from a seed), `Model` (pivots, folding, tabs, keys), `View`, `App` |
+| `src/Accounting` | the application as a library: `Ledger` (a chart of accounts, cost centres, periods and the lines, made from a seed), `Planning` (the plan as a graph: a document, the cells as a sheet, the cube as a calc), `Model` (pivots, folding, tabs, keys, editing), `View`, `App` |
 | `src/Accounting.Browser` | the module: the exports that `runtime/gfx.js` calls, and the counts the tests read |
 | `tests/Accounting.Tests` | the ledger, the model and the scene, under .NET |
 | `tests/e2e/grid.mjs`, `tests/perf/grid.mjs` | the compiled module in Chromium: what it does, what it costs |
-| `lib/*` | submodules: graphics (the `Grid` and `Tabs` widgets, the canvas host), runtime (the glue), core (`FSharp.Wasm.Frame`, the base library), wasmecto (the test framework) |
+| `lib/*` | submodules: graphics (the `Grid` and `Tabs` widgets, the canvas host), runtime (the glue), core (`FSharp.Wasm.Frame`, `Formula`, `Graph`, `Live`, the base library), wasmecto (the test framework) |
 
 ## Not yet
 
 - The ledger is made up (a seed makes the same million lines every time); nothing is read from a file or a server yet.
-- A cell is not edited, and a formula is a typed expression (`Sub(M "Actual", M "Budget")`), not text a person types.
+- Only the Budget measure of accounts by periods is written; a plan by cost centre (the cells are per account and month) is not there. The plan is in the browser's memory: there is no file or server to keep it, though every step
+  is a patch (`FSharp.Wasm.Graph`) that could be sent.
+- The plan is one mutable graph that the models of a run share (an earlier model sees the later steps): the loop only moves forward, and the tape and the undo are what go back.
 - The totals of a group can be a sum, an average, the first or the last of its leaves; a minimum and a maximum are not there.
 - A screen reader is told the one cell that is selected (the grid's value), not the cells: a table of a million rows cannot be in the accessibility tree. The overlay for tables belongs to the accessibility layer of the platform, which is not finished.
 - Sums are floating point (exact to the cent for totals up to about 10^11).

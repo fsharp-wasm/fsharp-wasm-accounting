@@ -27,24 +27,21 @@ type Detail =
 /// A cell of the plan being written: the budget of an account in a month (their leaves), and the text typed so far.
 type Edit = { Account: int; Period: int; Text: string }
 
-/// What an edit of the plan did, for the status line: the cell, and how many cells changed their value (the cell itself, and what reads it).
-type Recalc = { Cell: string; Changed: int }
+/// What a step of the plan did, for the status line: the cell, how many cells came out with another value (the cell itself, and what reads it), and what the engine did for it: how many
+/// calcs the step reached and how many of those it ran (the rest came out the same and were left alone).
+type Recalc = { Cell: string; Changed: int; Reached: int; Ran: int }
 
 type Model =
     { Facts: Facts
       Pivot: int
+      /// the cube as the table shows it: the facts for the two dimensions with the plan written over the Budget measure (a snapshot of `G.Cube` after the last step)
       Cube: Cube
-      /// the cube of the ledger as it is, before the plan: the budget of the lines
-      Raw: Cube
-      /// the ledger of accounts × months as it is: what the names Actual and Budget of a formula of the plan stand for
-      PlanBase: Cube
-      /// the plan: a cell per account (row) and month (column) that a person wrote a number or a formula into; the book recalculates what a change reaches.  It is changed only by `update`.  The book is one mutable store: the models of a run share it (an earlier model sees the later edits), which is fine for a loop that only moves forward and is what the data graph (fsharp-wasm-core docs/data-graph.md, step 1) replaces by a persistent store.
-      Plan: Book
+      /// the plan as a graph: the text of the cells, the formulas, the cube, the tape and the undo.  It is changed only by `update`.
+      G: Planning
       /// the cell being written, when there is one
       Editing: Edit option
-      /// what the cells were before each edit (account, month, text), the last one first; and what undo took back
-      Undo: (int * int * string) list
-      Redo: (int * int * string) list
+      /// how many steps are on the tape: what tells a model after a step from one before it
+      Steps: int
       LastRecalc: Recalc option
       /// the index of the measure shown: Actual, Budget, Variance, Variance %
       Measure: int
@@ -55,6 +52,8 @@ type Model =
       Rows: int[]
       Cols: int[]
       Main: Grid.State
+      /// the table of the steps on the tape
+      HistoryGrid: Grid.State
       Details: Detail list
       /// "pivot", or the id of a detail
       Tab: string
@@ -109,15 +108,15 @@ module Layout =
     let detailMetrics : Grid.Metrics = { Grid.metrics with ColWidth = 150.0f; HeaderWidth = 120.0f }
     let detailColumns = [| "Account"; "Cost centre"; "Reference"; "Actual"; "Budget" |]
 
+    /// The steps on the tape: the step is the line header, so it is wide, and four small columns say what the engine did for it.
+    let historyMetrics : Grid.Metrics = { Grid.metrics with ColWidth = 110.0f; HeaderWidth = 340.0f }
+    let historyColumns = [| "Reached"; "Ran"; "Left alone"; "Changed" |]
+
 module Model =
 
     let private measureNames = [| "Actual"; "Budget"; "Variance"; "Variance %" |]
     let measureName (i: int) : string = measureNames.[i]
     let measureCount = measureNames.Length
-
-    let private buildCube (facts: Facts) (pivot: int) : Cube =
-        let p = Pivots.all.[pivot]
-        Facts.pivot facts p.RowDim p.ColDim Ledger.formulas
 
     /// Open as far as the levels given: the total and the first `levels` levels.
     let private openTo (tree: Hierarchy) (levels: int) : bool[] = tree.Nodes |> Array.map (fun n -> n.Level < levels)
@@ -129,6 +128,11 @@ module Model =
     let mainFrame (m: Model) : Grid.Frame =
         let r = Layout.gridRect m.Viewport
         { Rows = m.Rows.Length; Cols = m.Cols.Length; Width = r.W; Height = r.H; Metrics = Layout.mainMetrics }
+
+    /// The steps on the tape, the newest first.
+    let historyFrame (m: Model) : Grid.Frame =
+        let r = Layout.gridRect m.Viewport
+        { Rows = m.Steps; Cols = Layout.historyColumns.Length; Width = r.W; Height = r.H; Metrics = Layout.historyMetrics }
 
     let detailFrame (m: Model) (d: Detail) : Grid.Frame =
         let r = Layout.gridRect m.Viewport
@@ -155,41 +159,6 @@ module Model =
             | Some (r, c) -> leafAt m r c
             | None -> None
 
-        /// The leaves as the cube of the pivot has them: row leaf and column leaf of an account and a month.
-        let private leaves (pivot: int) (account: int) (period: int) : int * int = if pivot = 0 then (account, period) else (period, account)
-
-        /// The book of the plan: a cell per account (row) and month (column); the names Actual and Budget in a formula are the ledger's own numbers for that account and month.
-        let book (basis: Cube) : Book =
-            Book((fun (at: CellRef) (name: string) ->
-                    match name with
-                    | "Actual" -> Some (Number (Cube.leaf basis 0 at.Row at.Col))
-                    | "Budget" -> Some (Number (Cube.leaf basis 1 at.Row at.Col))
-                    | _ -> None),
-                 (fun _ -> None))
-
-        /// The cube with the plan in it: every cell of the plan that holds a number is the budget of its leaf (a text or an error leaves the ledger's number).
-        let apply (pivot: int) (plan: Book) (raw: Cube) : Cube =
-            if not (pivotHasPlan pivot) then raw
-            else
-                let changes =
-                    [| for cell in plan.Cells do
-                         match plan.Get(cell.Col, cell.Row) with
-                         | Number n -> yield (let (r, k) = leaves pivot cell.Row cell.Col in (r, k, n))
-                         | _ -> () |]
-                if changes.Length = 0 then raw else Cube.withLeaves raw 1 changes
-
-        /// The cube of the model with the cells that changed: only those leaves are written again, and a cell that is no number any more is the ledger's budget again.
-        let applyChanges (m: Model) (changes: Change[]) : Cube =
-            if not (pivotHasPlan m.Pivot) || changes.Length = 0 then m.Cube
-            else
-                let written =
-                    changes |> Array.map (fun ch ->
-                        let (r, k) = leaves m.Pivot ch.Cell.Row ch.Cell.Col
-                        match ch.After with
-                        | Number n -> (r, k, n)
-                        | _ -> (r, k, Cube.leaf m.Raw 1 r k))
-                Cube.withLeaves m.Cube 1 written
-
         let cellName (m: Model) (account: int) (period: int) : string =
             Ledger.leafLabel m.Facts Ledger.Accounts account + " · " + Ledger.leafLabel m.Facts Ledger.Periods period
 
@@ -205,15 +174,29 @@ module Model =
 
         let cell (m: Model) (r: int) (c: int) : Grid.Cell =
             match Plan.leafAt m r c with
-            | Some (account, period) when m.Plan.Source(period, account) <> "" ->
+            | Some (account, period) when Planning.source m.G account period <> "" ->
                 // a cell of the plan: its value (a formula is marked ƒ, a number that was typed •), or the error it is
-                let marked = (if m.Plan.Formula(period, account).IsSome then "ƒ " else "• ")
-                (match m.Plan.Get(period, account) with
+                let at = Planning.cellAt account period
+                let marked = (if m.G.Sheet.Formula(at).IsSome then "ƒ " else "• ")
+                (match m.G.Sheet.Peek(at) with
                  | Number n -> { Text = marked + Format.amount n; Muted = false; Left = false }
                  | v -> { Text = marked + Value.toText v; Muted = false; Left = false })
             | _ ->
                 let v = Cube.value m.Cube m.Measure m.Rows.[r] m.Cols.[c]
                 { Text = Format.amount v; Muted = (v = 0.0); Left = false }
+
+        /// The step in line `i` of the history (the newest is the first): its number and what was done.
+        let historyRow (tape: FSharp.Wasm.Graph.Entry[]) (i: int) : Grid.Line =
+            let e = tape.[tape.Length - 1 - i]
+            { Label = string e.Number + "  " + e.Label + (if e.Remote then "  (from elsewhere)" else ""); Level = 0; Group = false; Open = false }
+
+        let historyCol (c: int) : Grid.Line = { Label = Layout.historyColumns.[c]; Level = 0; Group = false; Open = false }
+
+        /// What the engine did for a step: the calcs it reached, how many of them ran, how many it left alone because they came out the same, and how many came out with another value.
+        let historyCell (tape: FSharp.Wasm.Graph.Entry[]) (r: int) (c: int) : Grid.Cell =
+            let f = tape.[tape.Length - 1 - r].Flushed
+            let n = match c with 0 -> f.Reached | 1 -> f.Ran | 2 -> f.Reached - f.Ran | _ -> f.Changed
+            { Text = string n; Muted = (n = 0); Left = false }
 
         let detailRow (m: Model) (d: Detail) (i: int) : Grid.Line =
             { Label = Ledger.dateOf m.Facts d.Entries.[i]; Level = 0; Group = false; Open = false }
@@ -243,15 +226,16 @@ module Model =
 
     /// A table is held inside its window: after the window changed size, and after a tab was opened.
     let private fit (m: Model) : Model =
-        let m1 = { m with Main = Grid.clamp (mainFrame m) m.Main }
+        let m1 = { m with Main = Grid.clamp (mainFrame m) m.Main; HistoryGrid = Grid.clamp (historyFrame m) m.HistoryGrid }
         { m1 with Details = m1.Details |> List.map (fun d -> { d with Grid = Grid.clamp (detailFrame m1 d) d.Grid }) }
 
-    let private turned (m: Model) (pivot: int) (cube: Cube) : Model =
+    /// The table turned to another pivot: the graph has built the cube for the new axes (and written the plan over it), the lines are the first levels again.
+    let private turned (m: Model) (pivot: int) : Model =
+        let cube = m.G.Cube.Peek
         reflow
             { m with
                 Pivot = pivot
-                Raw = cube
-                Cube = Plan.apply pivot m.Plan cube
+                Cube = cube
                 Editing = None
                 RowOpen = openTo cube.RowTree 1
                 ColOpen = openTo cube.ColTree 1
@@ -264,18 +248,16 @@ module Model =
         let t0 = clock ()
         let facts = Ledger.facts lines 20261123u
         let t1 = clock ()
-        let cube = buildCube facts 0
+        let g = Planning.create facts Ledger.formulas
+        let cube = g.Cube.Peek
         let t2 = clock ()
         let m =
             { Facts = facts
               Pivot = 0
               Cube = cube
-              Raw = cube
-              PlanBase = cube
-              Plan = Plan.book cube
+              G = g
               Editing = None
-              Undo = []
-              Redo = []
+              Steps = 0
               LastRecalc = None
               Measure = 0
               RowOpen = openTo cube.RowTree 1
@@ -283,6 +265,7 @@ module Model =
               Rows = [||]
               Cols = [||]
               Main = Grid.start
+              HistoryGrid = Grid.start
               Details = []
               Tab = "pivot"
               Viewport = Vec2.create 1280.0f 800.0f
@@ -315,12 +298,12 @@ module Model =
 
     let private toggle (isOpen: bool[]) (node: int) : bool[] = isOpen |> Array.mapi (fun i o -> if i = node then not o else o)
 
-    // ── writing the plan ──
+    // ── writing the plan: every step is a step on the tape of the graph ──
 
     /// The text a cell starts with when it is opened for editing: what was written into it, or the budget of the ledger as a number.
     let private startText (m: Model) (account: int) (period: int) : string =
-        let written = m.Plan.Source(period, account)
-        if written <> "" then written else Value.numberText (Cube.leaf m.PlanBase 1 account period)
+        let written = Planning.source m.G account period
+        if written <> "" then written else Value.numberText (Cube.leaf m.G.Base 1 account period)
 
     let private beginEdit (m: Model) (initial: string option) : Model =
         match Plan.selected m with
@@ -328,40 +311,45 @@ module Model =
             { m with Editing = Some { Account = account; Period = period; Text = (match initial with Some t -> t | None -> startText m account period) } }
         | None -> m
 
-    /// Put `text` into the cell of the plan: the cell and what reads it are calculated again, and the cube takes the numbers that changed.  Returns what the cell held before.
-    let private writePlan (m: Model) (account: int) (period: int) (text: string) : Model * string =
-        let before = m.Plan.Source(period, account)
-        let changes = m.Plan.Set(period, account, text)
-        ({ m with Cube = Plan.applyChanges m changes; LastRecalc = Some ({ Cell = Plan.cellName m account period; Changed = changes.Length } : Recalc) }, before)
+    /// The model after a step of the graph: the cube it made, the step on the tape, and what the engine did for it (the status line says it).
+    let private stepped (m: Model) (cell: string) (result: (FSharp.Wasm.Graph.Applied * int) option) : Model =
+        match result with
+        | None -> m
+        | Some (a, changed) ->
+            { m with
+                Cube = m.G.Cube.Peek
+                Steps = (Planning.tape m.G).Length
+                LastRecalc = Some { Cell = cell; Changed = changed; Reached = a.Flushed.Reached; Ran = a.Flushed.Ran } }
 
+    /// Keep what was typed: one step on the tape (nothing when it is what the cell holds).
     let private commitEdit (m: Model) : Model =
         match m.Editing with
         | Some e ->
-            let (m1, before) = writePlan m e.Account e.Period e.Text
-            if before = e.Text then { m1 with Editing = None }
-            else { m1 with Editing = None; Undo = (e.Account, e.Period, before) :: m.Undo; Redo = [] }
+            let cell = Plan.cellName m e.Account e.Period
+            if Planning.source m.G e.Account e.Period = e.Text then { m with Editing = None }
+            else stepped { m with Editing = None } cell (Some (Planning.write m.G (cell + " = " + e.Text) e.Account e.Period e.Text))
         | None -> m
 
+    /// The label of the last step on the tape: what undo and redo name in the status line.
+    let private lastLabel (m: Model) : string =
+        match Array.tryLast (Planning.tape m.G) with
+        | Some entry -> entry.Label
+        | None -> ""
+
     let private undoEdit (m: Model) : Model =
-        match m.Undo with
-        | (account, period, text) :: rest ->
-            let (m1, current) = writePlan m account period text
-            { m1 with Undo = rest; Redo = (account, period, current) :: m.Redo; Editing = None }
-        | [] -> m
+        let r = Planning.undo m.G
+        stepped { m with Editing = None } (lastLabel m) r
 
     let private redoEdit (m: Model) : Model =
-        match m.Redo with
-        | (account, period, text) :: rest ->
-            let (m1, current) = writePlan m account period text
-            { m1 with Redo = rest; Undo = (account, period, current) :: m.Undo; Editing = None }
-        | [] -> m
+        let r = Planning.redo m.G
+        stepped { m with Editing = None } (lastLabel m) r
 
     /// Empty the cell of the plan that is selected: the ledger's budget is there again.
     let private clearPlanCell (m: Model) : Model =
         match Plan.selected m with
-        | Some (account, period) when m.Plan.Source(period, account) <> "" ->
-            let (m1, before) = writePlan m account period ""
-            { m1 with Undo = (account, period, before) :: m.Undo; Redo = [] }
+        | Some (account, period) when Planning.source m.G account period <> "" ->
+            let cell = Plan.cellName m account period
+            stepped m cell (Some (Planning.write m.G (cell + " cleared") account period ""))
         | _ -> m
 
     /// What a key does while a cell is being written: the characters go into the text, Enter and Tab keep it, Escape throws it away.
@@ -386,6 +374,10 @@ module Model =
             | Grid.ToggleCol c -> reflow { m with ColOpen = toggle m.ColOpen m.Cols.[c] }
             | Grid.Open(r, c) -> openCell m r c
             | Grid.Ignored -> m
+        elif m.Tab = "history" then
+            match Grid.key (historyFrame m) m.Ui.Shift k m.HistoryGrid with
+            | Grid.Moved s -> { m with HistoryGrid = s }
+            | _ -> m
         else
             match m.Details |> List.tryFind (fun d -> d.Id = m.Tab) with
             | Some d ->
@@ -417,9 +409,10 @@ module Model =
                 if p = m.Pivot then m
                 else
                     let t0 = clock ()
-                    let cube = buildCube m.Facts p
+                    let d = Pivots.all.[p]
+                    Planning.turn m.G d.RowDim d.ColDim
                     let t1 = clock ()
-                    { turned m p cube with CubeMs = t1 - t0 }
+                    { turned m p with CubeMs = t1 - t0 }
             | SetMeasure i -> { m with Measure = i; Editing = None }
             | ToggleRow i -> if i < m.Rows.Length then reflow { m with RowOpen = toggle m.RowOpen m.Rows.[i] } else m
             | ToggleCol i -> if i < m.Cols.Length then reflow { m with ColOpen = toggle m.ColOpen m.Cols.[i] } else m
@@ -429,6 +422,7 @@ module Model =
             | GridState(tab, s) ->
                 // moving to another cell keeps what was written
                 if tab = "pivot" then (let m1 = (if m.Editing.IsSome && s.Selected <> m.Main.Selected then commitEdit m else m) in { m1 with Main = s })
+                elif tab = "history" then { m with HistoryGrid = s }
                 else { m with Details = m.Details |> List.map (fun d -> if d.Id = tab then { d with Grid = s } else d) }
             | OpenCell(r, c) -> openCell m r c
             | Select id -> { m with Tab = id }

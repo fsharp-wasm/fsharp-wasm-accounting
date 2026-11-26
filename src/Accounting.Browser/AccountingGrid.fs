@@ -84,7 +84,7 @@ let rowsShown () : int = page.App.Model.Rows.Length
 let colsShown () : int = page.App.Model.Cols.Length
 
 [<CompiledName("tabCount")>]
-let tabCount () : int = 1 + page.App.Model.Details.Length
+let tabCount () : int = 2 + page.App.Model.Details.Length
 
 [<CompiledName("pivot")>]
 let pivot () : int = page.App.Model.Pivot
@@ -92,11 +92,11 @@ let pivot () : int = page.App.Model.Pivot
 [<CompiledName("measure")>]
 let measure () : int = page.App.Model.Measure
 
-/// The tab on show: 0 is the pivot table, n the n-th tab of lines.
+/// The tab on show: 0 is the pivot table, 1 the history of the plan, n + 1 the n-th tab of lines.
 [<CompiledName("activeTab")>]
 let activeTab () : int =
     let m = page.App.Model
-    if m.Tab = "pivot" then 0 else 1 + (m.Details |> List.findIndex (fun d -> d.Id = m.Tab))
+    if m.Tab = "pivot" then 0 elif m.Tab = "history" then 1 else 2 + (m.Details |> List.findIndex (fun d -> d.Id = m.Tab))
 
 /// How far the table on show is scrolled, in pixels.
 [<CompiledName("offsetY")>]
@@ -127,3 +127,30 @@ let selectedCol () : int =
 
 [<CompiledName("frame")>]
 let frame (nowMs: float) : unit = page.Frame nowMs
+
+/// The plan: how many cells hold something, how many steps are on the tape, whether a cell is being written and the text typed so far, and the grand total of the Budget measure.
+[<CompiledName("planCells")>]
+let planCells () : int = Planning.count page.App.Model.G
+
+[<CompiledName("planSteps")>]
+let planSteps () : int = page.App.Model.Steps
+
+[<CompiledName("planEditing")>]
+let planEditing () : bool = page.App.Model.Editing.IsSome
+
+/// How many characters have been typed into the cell that is being written (a string does not cross the export as a value the test can compare).
+[<CompiledName("planEditLength")>]
+let planEditLength () : int = match page.App.Model.Editing with Some e -> e.Text.Length | None -> -1
+
+[<CompiledName("budgetTotal")>]
+let budgetTotal () : float = FSharp.Wasm.Frame.Cube.value page.App.Model.Cube 1 0 0
+
+/// What the last step did: the cells that came out with another value, the calcs it reached, and how many of those ran.
+[<CompiledName("lastChanged")>]
+let lastChanged () : int = match page.App.Model.LastRecalc with Some r -> r.Changed | None -> -1
+
+[<CompiledName("lastReached")>]
+let lastReached () : int = match page.App.Model.LastRecalc with Some r -> r.Reached | None -> -1
+
+[<CompiledName("lastRan")>]
+let lastRan () : int = match page.App.Model.LastRecalc with Some r -> r.Ran | None -> -1

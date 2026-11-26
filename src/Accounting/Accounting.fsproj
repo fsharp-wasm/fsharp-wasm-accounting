@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Ledger.fs" />
+    <Compile Include="Planning.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="View.fs" />
     <Compile Include="App.fs" />
@@ -18,6 +19,8 @@
   <ItemGroup>
     <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Frame/FSharp.Wasm.Frame.fsproj" />
     <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Formula/FSharp.Wasm.Formula.fsproj" />
+    <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Graph/FSharp.Wasm.Graph.fsproj" />
+    <ProjectReference Include="../../lib/fsharp-wasm-core/FSharp.Wasm.Live/FSharp.Wasm.Live.fsproj" />
     <ProjectReference Include="../../lib/graphics/src/FSharp.Graphics.Tea/FSharp.Graphics.Tea.fsproj" />
     <ProjectReference Include="../../lib/graphics/src/FSharp.Graphics.SceneDsl/FSharp.Graphics.SceneDsl.fsproj" />
     <ProjectReference Include="../../lib/graphics/src/FSharp.Graphics.Widgets/FSharp.Graphics.Widgets.fsproj" />

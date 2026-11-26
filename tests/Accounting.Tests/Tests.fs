@@ -222,19 +222,19 @@ let plan =
             let thrown = kept |> send [ Key "9"; Key "9"; Key "Escape" ]
             Expect.equal thrown.Editing None "Escape ends it"
             Expect.approxEqual (budget thrown 3 5) 12.0 1e-9 "and the cell is as it was"
-            Expect.equal thrown.Undo.Length 1 "a thrown away text is no step to undo"
+            Expect.equal thrown.Steps 1 "a thrown away text is no step to undo"
         testCase "F2 opens a cell with what is in it: the ledger's budget as a number, or the text that was written" <| fun () ->
             let m0 = planModel () |> select 2 4
             let e0 = (m0 |> send [ Key "F2" ]).Editing.Value
-            Expect.equal e0.Text (Value.numberText (Cube.leaf m0.PlanBase 1 2 4)) "the budget of the ledger"
+            Expect.equal e0.Text (Value.numberText (Cube.leaf m0.G.Base 1 2 4)) "the budget of the ledger"
             Expect.equal (e0.Account, e0.Period) (2, 4) "the account and the month"
             let e1 = (m0 |> send [ BeginEdit(Some "=Actual*2"); CommitEdit; Key "F2" ]).Editing.Value
             Expect.equal e1.Text "=Actual*2" "the formula, not its value"
         testCase "a formula reads the ledger by name: Actual and Budget are the numbers of that account and month" <| fun () ->
             let m0 = planModel ()
             let m = m0 |> put 4 7 "=Actual*1.1" |> put 4 8 "=Budget+100"
-            Expect.approxEqual (budget m 4 7) (Cube.leaf m0.PlanBase 0 4 7 * 1.1) 1e-6 "ten percent over what was booked"
-            Expect.approxEqual (budget m 4 8) (Cube.leaf m0.PlanBase 1 4 8 + 100.0) 1e-6 "the ledger's budget and a hundred"
+            Expect.approxEqual (budget m 4 7) (Cube.leaf m0.G.Base 0 4 7 * 1.1) 1e-6 "ten percent over what was booked"
+            Expect.approxEqual (budget m 4 8) (Cube.leaf m0.G.Base 1 4 8 + 100.0) 1e-6 "the ledger's budget and a hundred"
             let r = placeOf m.Cube.RowTree m.Rows 4
             Expect.stringStarts (Model.Table.cell m r (placeOf m.Cube.ColTree m.Cols 7)).Text "ƒ " "a formula is marked"
             Expect.approxEqual (total m 1) (total m0 1 + (budget m 4 7 - budget m0 4 7) + (budget m 4 8 - budget m0 4 8)) 1e-6 "the total moved by both"
@@ -261,7 +261,7 @@ let plan =
         testCase "an error that is corrected puts its number into the totals" <| fun () ->
             let m0 = planModel ()
             let m = m0 |> put 1 1 "=1/0" |> put 1 1 "=Actual"
-            Expect.approxEqual (budget m 1 1) (Cube.leaf m0.PlanBase 0 1 1) 1e-6 "the number"
+            Expect.approxEqual (budget m 1 1) (Cube.leaf m0.G.Base 0 1 1) 1e-6 "the number"
             Expect.approxEqual (total m 1) (total m0 1 - budget m0 1 1 + budget m 1 1) 1e-6 "in the total"
         testCase "undo and redo go back and forward over the steps, also across cells that read each other" <| fun () ->
             let m0 = planModel ()
@@ -272,18 +272,18 @@ let plan =
             Expect.approxEqual (budget u1 0 1) 200.0 1e-9 "and B1 followed it back"
             let u3 = u1 |> send [ Undo; Undo ]
             Expect.approxEqual (total u3 1) (total m0 1) 1e-6 "all three undone: the totals of the ledger"
-            Expect.equal u3.Plan.Count 0 "the plan is empty"
+            Expect.equal (Planning.count u3.G) 0 "the plan is empty"
             Expect.equal (u3 |> send [ Undo ]) u3 "nothing more to undo changes nothing"
             let r = u3 |> send [ Key "Redo"; Redo; Redo ]
             Expect.approxEqual (budget r 0 1) 300.0 1e-9 "all three again"
             Expect.approxEqual (total r 1) (total m1 1) 1e-6 "the same totals"
             let branched = u1 |> put 5 5 "7"
-            Expect.equal branched.Redo [] "a new step ends what could be redone"
+            Expect.isFalse branched.G.Timeline.CanRedo "a new step ends what could be redone"
         testCase "Delete empties the cell of the plan that is selected, and that is a step that can be undone" <| fun () ->
             let m0 = planModel ()
             let m1 = m0 |> put 6 6 "5000"
             let m2 = m1 |> select 6 6 |> send [ Key "Delete" ]
-            Expect.equal (m2.Plan.Source(6, 6)) "" "empty"
+            Expect.equal (Planning.source m2.G 6 6) "" "empty"
             Expect.approxEqual (budget m2 6 6) (budget m0 6 6) 1e-9 "the ledger's budget is back"
             Expect.approxEqual (total m2 1) (total m0 1) 1e-6 "and so are the totals"
             Expect.approxEqual (budget (m2 |> send [ Undo ]) 6 6) 5000.0 1e-9 "undone"
@@ -321,9 +321,37 @@ let plan =
             Expect.approxEqual (total back 1) (total edited 1) 1e-6 "the same total again"
             let centres = back |> send [ SetPivot 1 ]
             Expect.approxEqual (total centres 1) (Cube.value (init () |> send [ SetPivot 1 ]).Cube 1 0 0) 1e-6 "by cost centre the ledger's own budget"
+        testCase "the tape has every step with what the engine did for it, and the History tab shows it, the newest first" <| fun () ->
+            let m0 = planModel ()
+            let m = m0 |> put 0 0 "100" |> put 0 1 "=A1*2" |> put 0 0 "150" |> send [ Select "history" ]
+            let tape = Planning.tape m.G
+            Expect.equal (tape |> Array.map (fun e -> e.Number) |> Array.toList) [ 1; 2; 3 ] "three steps, numbered"
+            Expect.equal m.Steps 3 "the model counts them"
+            Expect.stringContains tape.[2].Label " = 150" "the label says what was written"
+            // the last step changed A1 and B1 (and the cube that holds them): it reached more than it ran or the same, and ran at least what changed
+            let last = tape.[2].Flushed
+            Expect.isTrue (last.Ran <= last.Reached && last.Changed <= last.Ran) "ran at most what was reached, changed at most what ran"
+            Expect.isTrue (last.Changed >= 2) "A1, B1 and the cube changed"
+            Expect.stringStarts (Model.Table.historyRow tape 0).Label "3  " "the newest step is the first line"
+            Expect.stringStarts (Model.Table.historyRow tape 2).Label "1  " "the oldest the last"
+            Expect.equal (Model.Table.historyCell tape 0 3).Text (string last.Changed) "the column that says how many changed"
+            Expect.equal m.Tab "history" "the tab is on show"
+            // the keys move the history's table and not the pivot
+            let moved = m |> send [ Key "Down" ]
+            Expect.equal moved.Main m.Main "the pivot did not move"
+            Expect.notEqual moved.HistoryGrid m.HistoryGrid "the history did"
+            // a cell cannot be written while the history is on show
+            Expect.equal (m |> select 0 0 |> send [ Key "5" ]).Editing None "no plan cell is selected on this tab"
         testCase "the cube of an edited plan is the one that is built from the whole plan at once" <| fun () ->
             let m = planModel () |> put 0 0 "100" |> put 0 1 "=A1+Actual" |> put 12 3 "=Budget*3" |> put 0 0 "=Actual" |> put 12 3 "" |> send [ Undo ]
-            let whole = Model.Plan.apply m.Pivot m.Plan m.Raw
+            // the cube that is made of the facts and the whole plan at once: every cell of the plan that is a number written over the budget
+            let numbers =
+                [| for k in m.G.Doc.Keys(m.G.Node, "cells") do
+                     let at = CellRef.ofKey (int k)
+                     match m.G.Sheet.Peek at with
+                     | Number n -> yield (at.Row, at.Col, n)
+                     | _ -> () |]
+            let whole = Cube.withLeaves m.G.Raw.Peek 1 numbers
             for measure in 0 .. Model.measureCount - 1 do
                 for (r, c) in [ (0, 0); (0, 1); (1, 0); (2, 5); (4, 10); (m.Cube.RowTree.Nodes.Length - 1, m.Cube.ColTree.Nodes.Length - 1) ] do
                     Expect.approxEqual (Cube.value m.Cube measure r c) (Cube.value whole measure r c) 1e-6 ("measure " + string measure + " at " + string r + "," + string c)
@@ -346,8 +374,15 @@ let scene =
             Expect.stringContains after.Value "Total" "the selected cell is said"
             app.Dispatch(OpenCell(1, 1))
             let tabs = SemanticTree.walk (build ()) |> Array.filter (fun s -> s.Role = Role.Tab)
-            Expect.equal tabs.Length 2 "the pivot and the lines of the cell"
+            Expect.equal tabs.Length 3 "the pivot, the history and the lines of the cell"
             Expect.isTrue (tabs |> Array.exists (fun s -> s.Selected && s.Name <> "Pivot")) "the new tab is the one on show"
+        testCase "the History tab is a table of its own, and builds with no step on the tape too" <| fun () ->
+            let app = App(TextEngine.approximate, 5000, clock)
+            let build () = SemanticTree.walk (app.Build(0.0f, Vec2.create 1280.0f 800.0f))
+            app.Dispatch(Select "history")
+            let empty = build () |> Array.find (fun s -> s.Role = Role.Grid)
+            Expect.stringContains empty.Name "History of the plan" "named"
+            Expect.isTrue (build () |> Array.exists (fun s -> s.Role = Role.Tab && s.Name = "History" && s.Selected)) "the History tab is selected"
         testCase "a canvas of another size is told to the model" <| fun () ->
             let app = App(TextEngine.approximate, 1000, clock)
             app.Build(0.0f, Vec2.create 900.0f 600.0f) |> ignore
