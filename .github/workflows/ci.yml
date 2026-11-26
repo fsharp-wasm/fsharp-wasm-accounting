@@ -7,7 +7,7 @@ on:
 
 env:
   # the compiler the module is built with (a fsharp-wasm revision; replace by a release binary when there is one)
-  COMPILER_REF: 36b22ffd36ba524e02091cd5668f4f144a0bbabf
+  COMPILER_REF: 53601f17d64ce0725286435ef3d6721a113d456b
 
 jobs:
   # The application under .NET: it builds, and its suites pass.
