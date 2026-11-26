@@ -2,6 +2,7 @@ module Accounting.Tests.Tests
 
 open FSharp.Math
 open FSharp.Wasm.Frame
+open FSharp.Wasm.Formula
 open FSharp.Graphics.Core
 open FSharp.Graphics.Scene
 open FSharp.Graphics.Widgets
@@ -176,6 +177,158 @@ let model =
             Expect.equal small.Viewport (Vec2.create 600.0f 500.0f) "the size is kept"
     ]
 
+// ── the plan: the Budget measure of the accounts × periods table, written by hand and by formula ──
+
+/// The grid with every leaf shown, on the Budget measure: the one where cells can be written.
+let private planModel () = init () |> send [ Fold true; SetMeasure 1 ]
+
+/// The place in the table of the leaf `leaf` of a tree among the lines (or columns) that are shown.
+let private placeOf (tree: Hierarchy) (shown: int[]) (leaf: int) : int =
+    shown |> Array.findIndex (fun n -> tree.Nodes.[n].Children.Length = 0 && tree.Nodes.[n].Lo = leaf)
+
+/// Select the cell of an account and a month (accounts × periods).
+let private select (account: int) (period: int) (m: Model) : Model =
+    m |> send [ GridState("pivot", { m.Main with Selected = Some(placeOf m.Cube.RowTree m.Rows account, placeOf m.Cube.ColTree m.Cols period) }) ]
+
+/// Write `text` into a cell of the plan the way a person does: select it, type, Enter.
+let private put (account: int) (period: int) (text: string) (m: Model) : Model =
+    m |> select account period |> send [ BeginEdit(Some text); CommitEdit ]
+
+let private budget (m: Model) (account: int) (period: int) = Cube.leaf m.Cube 1 account period
+let private total (m: Model) (measure: int) = Cube.value m.Cube measure 0 0
+
+let plan =
+    testList "Plan" [
+        testCase "a number typed into a budget cell is the budget of that account and month, and every total above it moves by the difference" <| fun () ->
+            let m0 = planModel ()
+            let m = m0 |> put 0 0 "900"
+            Expect.approxEqual (budget m 0 0) 900.0 1e-9 "the cell"
+            Expect.approxEqual (total m 1) (total m0 1 - budget m0 0 0 + 900.0) 1e-6 "the grand total of the budget moved by exactly that"
+            Expect.approxEqual (total m 0) (total m0 0) 1e-9 "what was booked is not touched"
+            Expect.approxEqual (total m 2) (total m 0 - total m 1) 1e-6 "the variance follows the budget"
+            Expect.equal (m.LastRecalc |> Option.map (fun r -> r.Changed)) (Some 1) "one cell changed"
+            Expect.equal m.Editing None "the editing is over"
+            let r = placeOf m.Cube.RowTree m.Rows 0
+            let c = placeOf m.Cube.ColTree m.Cols 0
+            Expect.stringStarts (Model.Table.cell m r c).Text "• " "a number that was typed is marked"
+            Expect.isTrue (Model.Plan.leafAt m r c |> Option.isSome) "it is a cell of the plan"
+        testCase "keys write a cell: a character starts it, Backspace takes one back, Enter keeps it, Escape throws it away" <| fun () ->
+            let m0 = planModel () |> select 3 5
+            let typing = m0 |> send [ Key "1"; Key "2"; Key "3"; Key "Backspace" ]
+            Expect.equal (typing.Editing |> Option.map (fun e -> e.Text)) (Some "12") "what was typed"
+            Expect.equal (budget typing 3 5) (budget m0 3 5) "nothing is written before Enter"
+            let kept = typing |> send [ Key "Enter" ]
+            Expect.approxEqual (budget kept 3 5) 12.0 1e-9 "Enter keeps it"
+            let thrown = kept |> send [ Key "9"; Key "9"; Key "Escape" ]
+            Expect.equal thrown.Editing None "Escape ends it"
+            Expect.approxEqual (budget thrown 3 5) 12.0 1e-9 "and the cell is as it was"
+            Expect.equal thrown.Undo.Length 1 "a thrown away text is no step to undo"
+        testCase "F2 opens a cell with what is in it: the ledger's budget as a number, or the text that was written" <| fun () ->
+            let m0 = planModel () |> select 2 4
+            let e0 = (m0 |> send [ Key "F2" ]).Editing.Value
+            Expect.equal e0.Text (Value.numberText (Cube.leaf m0.PlanBase 1 2 4)) "the budget of the ledger"
+            Expect.equal (e0.Account, e0.Period) (2, 4) "the account and the month"
+            let e1 = (m0 |> send [ BeginEdit(Some "=Actual*2"); CommitEdit; Key "F2" ]).Editing.Value
+            Expect.equal e1.Text "=Actual*2" "the formula, not its value"
+        testCase "a formula reads the ledger by name: Actual and Budget are the numbers of that account and month" <| fun () ->
+            let m0 = planModel ()
+            let m = m0 |> put 4 7 "=Actual*1.1" |> put 4 8 "=Budget+100"
+            Expect.approxEqual (budget m 4 7) (Cube.leaf m0.PlanBase 0 4 7 * 1.1) 1e-6 "ten percent over what was booked"
+            Expect.approxEqual (budget m 4 8) (Cube.leaf m0.PlanBase 1 4 8 + 100.0) 1e-6 "the ledger's budget and a hundred"
+            let r = placeOf m.Cube.RowTree m.Rows 4
+            Expect.stringStarts (Model.Table.cell m r (placeOf m.Cube.ColTree m.Cols 7)).Text "ƒ " "a formula is marked"
+            Expect.approxEqual (total m 1) (total m0 1 + (budget m 4 7 - budget m0 4 7) + (budget m 4 8 - budget m0 4 8)) 1e-6 "the total moved by both"
+        testCase "a cell that reads another is calculated again when it changes, and only what changed is written into the cube" <| fun () ->
+            // account 0 is row 1, period 0 is column A, period 1 is column B
+            let m0 = planModel () |> put 0 0 "100" |> put 0 1 "=A1*2"
+            Expect.approxEqual (budget m0 0 1) 200.0 1e-9 "B1 is twice A1"
+            let m = m0 |> put 0 0 "150"
+            Expect.approxEqual (budget m 0 1) 300.0 1e-9 "and follows it"
+            Expect.equal (m.LastRecalc |> Option.map (fun r -> r.Changed)) (Some 2) "A1 and B1: two cells changed, the rest was left alone"
+            let same = m |> put 0 0 "150.0"
+            Expect.equal (same.LastRecalc |> Option.map (fun r -> r.Changed)) (Some 0) "the same value written another way changes nothing downstream"
+        testCase "an error is shown as the error it is, and the ledger's budget stays in the totals" <| fun () ->
+            let m0 = planModel ()
+            let m = m0 |> put 1 1 "=1/0" |> put 1 2 "=nonsense" |> put 1 3 "=C2"
+            let text period = (Model.Table.cell m (placeOf m.Cube.RowTree m.Rows 1) (placeOf m.Cube.ColTree m.Cols period)).Text
+            Expect.stringContains (text 1) "#DIV/0!" "division by zero"
+            Expect.stringContains (text 2) "#NAME?" "a name that nothing knows"
+            Expect.stringContains (text 3) "#NAME?" "an error is read on"
+            Expect.approxEqual (total m 1) (total m0 1) 1e-6 "none of them is a number, so the totals are the ledger's"
+            let loop = m0 |> put 2 0 "=B3" |> put 2 1 "=A3"
+            Expect.stringContains (Model.Table.cell loop (placeOf loop.Cube.RowTree loop.Rows 2) (placeOf loop.Cube.ColTree loop.Cols 0)).Text "#CYCLE!" "a loop is named"
+            Expect.approxEqual (total loop 1) (total m0 1) 1e-6 "and costs the totals nothing"
+        testCase "an error that is corrected puts its number into the totals" <| fun () ->
+            let m0 = planModel ()
+            let m = m0 |> put 1 1 "=1/0" |> put 1 1 "=Actual"
+            Expect.approxEqual (budget m 1 1) (Cube.leaf m0.PlanBase 0 1 1) 1e-6 "the number"
+            Expect.approxEqual (total m 1) (total m0 1 - budget m0 1 1 + budget m 1 1) 1e-6 "in the total"
+        testCase "undo and redo go back and forward over the steps, also across cells that read each other" <| fun () ->
+            let m0 = planModel ()
+            let m1 = m0 |> put 0 0 "100" |> put 0 1 "=A1*2" |> put 0 0 "150"
+            Expect.approxEqual (budget m1 0 1) 300.0 1e-9 "after three steps"
+            let u1 = m1 |> send [ Key "Undo" ]
+            Expect.approxEqual (budget u1 0 0) 100.0 1e-9 "A1 is as it was"
+            Expect.approxEqual (budget u1 0 1) 200.0 1e-9 "and B1 followed it back"
+            let u3 = u1 |> send [ Undo; Undo ]
+            Expect.approxEqual (total u3 1) (total m0 1) 1e-6 "all three undone: the totals of the ledger"
+            Expect.equal u3.Plan.Count 0 "the plan is empty"
+            Expect.equal (u3 |> send [ Undo ]) u3 "nothing more to undo changes nothing"
+            let r = u3 |> send [ Key "Redo"; Redo; Redo ]
+            Expect.approxEqual (budget r 0 1) 300.0 1e-9 "all three again"
+            Expect.approxEqual (total r 1) (total m1 1) 1e-6 "the same totals"
+            let branched = u1 |> put 5 5 "7"
+            Expect.equal branched.Redo [] "a new step ends what could be redone"
+        testCase "Delete empties the cell of the plan that is selected, and that is a step that can be undone" <| fun () ->
+            let m0 = planModel ()
+            let m1 = m0 |> put 6 6 "5000"
+            let m2 = m1 |> select 6 6 |> send [ Key "Delete" ]
+            Expect.equal (m2.Plan.Source(6, 6)) "" "empty"
+            Expect.approxEqual (budget m2 6 6) (budget m0 6 6) 1e-9 "the ledger's budget is back"
+            Expect.approxEqual (total m2 1) (total m0 1) 1e-6 "and so are the totals"
+            Expect.approxEqual (budget (m2 |> send [ Undo ]) 6 6) 5000.0 1e-9 "undone"
+            // the book of the plan is one mutable store that the models of a run share, so the empty cell is looked at in a fresh model
+            let fresh = planModel () |> select 6 6
+            Expect.equal (fresh |> send [ Key "Delete" ]) fresh "an empty cell has nothing to empty"
+        testCase "moving to another cell keeps what was written; Tab keeps it and moves right" <| fun () ->
+            let m0 = planModel () |> select 7 2
+            let moved = m0 |> send [ BeginEdit(Some "321"); GridState("pivot", { m0.Main with Selected = Some(fst m0.Main.Selected.Value, snd m0.Main.Selected.Value + 1) }) ]
+            Expect.approxEqual (budget moved 7 2) 321.0 1e-9 "kept"
+            Expect.equal moved.Editing None "and the editing is over"
+            let tabbed = m0 |> send [ BeginEdit(Some "654"); Key "Tab" ]
+            Expect.approxEqual (budget tabbed 7 2) 654.0 1e-9 "kept"
+            Expect.equal tabbed.Main.Selected (Some(fst m0.Main.Selected.Value, snd m0.Main.Selected.Value + 1)) "one to the right"
+        testCase "only a leaf by a leaf on the Budget measure of the accounts and months can be written" <| fun () ->
+            let actual = init () |> send [ Fold true ] |> select 0 0
+            Expect.equal (actual |> send [ Key "5" ]).Editing None "Actual is the ledger's: nothing to write"
+            let m = planModel ()
+            Expect.equal (m |> send [ GridState("pivot", { m.Main with Selected = Some(0, 0) }); Key "5" ]).Editing None "the grand total is no cell of the plan"
+            let group = Array.findIndex (fun n -> m.Cube.RowTree.Nodes.[n].Children.Length > 0 && n <> 0) m.Rows
+            Expect.equal (m |> send [ GridState("pivot", { m.Main with Selected = Some(group, 2) }); Key "5" ]).Editing None "a group is a sum, not a cell"
+            let centres = planModel () |> send [ SetPivot 1; Fold true ]
+            Expect.equal (centres |> send [ GridState("pivot", { centres.Main with Selected = Some(centres.Rows.Length - 1, centres.Cols.Length - 1) }); Key "5" ]).Editing None "cost centres have no plan"
+            Expect.equal (m |> select 0 0 |> send [ BeginEdit(Some "5"); SetMeasure 0 ]).Editing None "changing the measure ends an editing"
+        testCase "turning the table keeps the plan: the months by the accounts show the same cells, the cost centres the ledger" <| fun () ->
+            let m0 = planModel () |> put 0 0 "900" |> put 9 9 "=Actual/2"
+            let turned = m0 |> send [ SetPivot 2; Fold true ]
+            Expect.approxEqual (total turned 1) (total m0 1) 1e-6 "the same grand total"
+            Expect.approxEqual (Cube.leaf turned.Cube 1 0 0) 900.0 1e-9 "the cell is the same: period 0 of account 0"
+            Expect.approxEqual (Cube.leaf turned.Cube 1 9 9) (budget m0 9 9) 1e-6 "and the formula"
+            let edited = turned |> send [ GridState("pivot", { turned.Main with Selected = Some(placeOf turned.Cube.RowTree turned.Rows 3, placeOf turned.Cube.ColTree turned.Cols 4) }); BeginEdit(Some "11"); CommitEdit ]
+            Expect.approxEqual (Cube.leaf edited.Cube 1 3 4) 11.0 1e-9 "written in the turned table: row = month 3, column = account 4"
+            let back = edited |> send [ SetPivot 0 ]
+            Expect.approxEqual (budget back 4 3) 11.0 1e-9 "and it is account 4, month 3 when turned back"
+            Expect.approxEqual (total back 1) (total edited 1) 1e-6 "the same total again"
+            let centres = back |> send [ SetPivot 1 ]
+            Expect.approxEqual (total centres 1) (Cube.value (init () |> send [ SetPivot 1 ]).Cube 1 0 0) 1e-6 "by cost centre the ledger's own budget"
+        testCase "the cube of an edited plan is the one that is built from the whole plan at once" <| fun () ->
+            let m = planModel () |> put 0 0 "100" |> put 0 1 "=A1+Actual" |> put 12 3 "=Budget*3" |> put 0 0 "=Actual" |> put 12 3 "" |> send [ Undo ]
+            let whole = Model.Plan.apply m.Pivot m.Plan m.Raw
+            for measure in 0 .. Model.measureCount - 1 do
+                for (r, c) in [ (0, 0); (0, 1); (1, 0); (2, 5); (4, 10); (m.Cube.RowTree.Nodes.Length - 1, m.Cube.ColTree.Nodes.Length - 1) ] do
+                    Expect.approxEqual (Cube.value m.Cube measure r c) (Cube.value whole measure r c) 1e-6 ("measure " + string measure + " at " + string r + "," + string c)
+    ]
+
 let scene =
     testList "Scene" [
         testCase "the page is built: a table with its name and the selected cell, a strip of tabs, the buttons" <| fun () ->
@@ -201,4 +354,4 @@ let scene =
             Expect.equal app.Model.Viewport (Vec2.create 900.0f 600.0f) "the size"
     ]
 
-let suites = [ ledger; model; scene ]
+let suites = [ ledger; model; plan; scene ]
